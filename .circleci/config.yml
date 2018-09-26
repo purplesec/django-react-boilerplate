@@ -1,33 +1,29 @@
-# This circle.yml file does some basic testing on CI for the boilerplate itself.
-# When using the boilerplate this file will not be used, proj_circle.yml is used
-# instead.
 version: 2
 
 jobs:
   build:
-    working_directory: ~/django-react-boilerplate
+    working_directory: ~/{{project_name}}
     docker:
-      - image: circleci/python:3.6-stretch-node-browsers
+      - image: circleci/python:3.6-stretch-node-browsers # remeber to update those!
         environment:
+    # makes default virtualenv be ignored by pipenv avoiding dependencies conflict
           PIPENV_IGNORE_VIRTUALENVS: True
           PIPENV_VENV_IN_PROJECT: True
           PIPENV_DONT_LOAD_ENV: 0
     steps:
       - checkout
+      # this updates git-lfs to make pre-commit large files check hook work properly
+      # more details in https://github.com/pre-commit/pre-commit-hooks/issues/252
+      - run:
+          command: curl -s https://packagecloud.io/install/repositories/github/git-lfs/script.deb.sh | sudo bash
+      - run:
+          command: sudo apt-get install git-lfs --upgrade
       - run:
           command: sudo chown -R circleci:circleci /usr/local/bin
       - run:
           command: sudo chown -R circleci:circleci /usr/local/lib/python3.6/site-packages
       - run:
-          command: pip install django
-      - run:
-          command: django-admin startproject testproject --extension py,yml,json,example --name Procfile,README.md --template=.
-      - run:
           command: pip install requests pipenv --upgrade
-          path: testproject
-      - run:
-          command: pipenv lock --dev
-          path: testproject
       - restore_cache:
           keys:
             - v1-pipenv-cache-{{ .Branch }}-{{ .Environment.CIRCLE_SHA1 }}
@@ -35,118 +31,77 @@ jobs:
             - v1-pipenv-cache-
       - run:
           command: pipenv install --dev
-          path: testproject
       - save_cache:
           key: pipenv-cache-{{ .Branch }}-{{ .Environment.CIRCLE_SHA1 }}
           paths:
-            - testproject/.venv
+            - .venv
             - /usr/local/bin
             - /usr/local/lib/python3.6/site-packages
-      - run:
-          command: cp testproject/settings/local.py.example testproject/settings/local.py
-          path: testproject
-      - run:
-          command: cp .env.example .env
-          path: testproject
-      - run:
-          command: pipenv run python manage.py makemigrations
-          path: testproject
-      - run:
-          command: pipenv run python manage.py migrate
-          path: testproject
-      - run:
-          command: pipenv run python manage.py test
-          path: testproject
-      - run:
-          command: pipenv run prospector
-          path: testproject
-      - run:
-          command: pipenv run python manage.py has_missing_migrations
-          path: testproject
-      - run:
-          command: pipenv run python manage.py check --deploy --fail-level WARNING
-          path: testproject
-          environment:
-            SECRET_KEY: '$(python -c "import uuid; print(uuid.uuid4().hex + uuid.uuid4().hex)")'
-            SENDGRID_USERNAME: foo
-            SENDGRID_PASSWORD: password
-            DJANGO_SETTINGS_MODULE: 'testproject.settings.production'
-            DATABASE_URL: 'sqlite:///'
-            ALLOWED_HOSTS: '.example.org'
-            REDIS_URL: 'redis://'
       - restore_cache:
           keys:
             - v1-npm-cache-{{ .Branch }}-{{ .Environment.CIRCLE_SHA1 }}
             - v1-npm-cache-{{ .Branch }}-
             - v1-npm-cache-
       - run:
-          command: npm update --save
-          path: testproject
-      - run:
-          command: npm update --save-dev
-          path: testproject
-      - run:
-          name: "hotfix for #133"
-          command: |
-            sed -i 's/"bootstrap-loader": "^2.1.0"/"bootstrap-loader": "2.1.0"/g' package.json
-          path: testproject
-      - run:
-          command: npm install --no-optional
-          path: testproject
-      - run:
-          command: npm dedupe
-          path: testproject
-      # npm ls will error on dependencies errors
-      - run:
-          command: npm ls
-          path: testproject
+          command: npm install
       - save_cache:
-          key: dependency-cache-{{ .Branch }}-{{ .Environment.CIRCLE_SHA1 }}
+          key: npm-cache-{{ .Branch }}-{{ .Environment.CIRCLE_SHA1 }}
           paths:
-            - testproject/node_modules
-      - run:
-          command: npm run test
-          path: testproject
-      - run:
-          command: npm run lint
-          path: testproject
+            - node_modules
       - run:
           command: npm run build
-          path: testproject
-  deploy:
-    working_directory: ~/django-react-boilerplate
-    docker:
-      - image: circleci/python:3.6-stretch-node-browsers
-        environment:
-          PIPENV_IGNORE_VIRTUALENVS: True
-          PIPENV_VENV_IN_PROJECT: True
-          PIPENV_DONT_LOAD_ENV: 0
-    steps:
-      - checkout
       - run:
-          command: mv proj_circle.yml .circleci/config.yml
+          command: npm run lint
+      # style check
       - run:
-          command: git checkout -b boilerplate-release
+          command: pipenv run prospector --messages-only
+      # security checks
       - run:
-          command: git add .circleci/config.yml
+          command: pipenv run bandit -r .
       - run:
-          command: git rm proj_circle.yml
+          command: pipenv check
+      # imports check
       - run:
-          command: git commit -m "Replacing circle.yml" --author "Vinta Software <contact@vinta.com.br>"
+          command: pipenv run isort **/*.py --check-only
+      - run:
+          command: pipenv run pre-commit run --all-files
           environment:
-            GIT_COMMITTER_NAME: "Vinta Software"
-            GIT_COMMITTER_EMAIL: "contact@vinta.com.br"
+            SKIP: prospector,isort,eslint,missing-migrations
       - run:
-          command: git push origin boilerplate-release --force
+          command: pipenv run python manage.py has_missing_migrations --ignore authtools
+          environment:
+            DJANGO_SETTINGS_MODULE: '{{project_name}}.settings.local_base'
+      - run:
+          command: pipenv run python manage.py check --deploy
+          environment:
+            DJANGO_SETTINGS_MODULE: '{{project_name}}.settings.production'
+            SECRET_KEY: "$(python -c 'import uuid; print(uuid.uuid4().hex + uuid.uuid4().hex)')"
+            DATABASE_URL: 'sqlite:///'
+            ALLOWED_HOSTS: '.example.org'
+            SENDGRID_USERNAME: 'test'
+            SENDGRID_PASSWORD: 'test'
+            REDIS_URL: 'redis://'
+      - run:
+          command: pipenv run coverage run manage.py test
+      - run:
+          command: npm run test
+      - run:
+          command: |
+            mkdir -p test-reports/
+            pipenv run coverage xml -O test-reports/results.xml
+          when: always
+      - store_test_results:
+          path: test-reports
+      - store_artifacts:
+          path: test-reports
 
+
+# This is necessary for the boilerplate's CI. You can remove these lines
 workflows:
   version: 2
-  build_and_deploy:
+  build-workflow:
     jobs:
-      - build
-      - deploy:
-          requires:
-            - build
+      - build:
           filters:
             branches:
-              only: master
+              ignore: boilerplate-release
